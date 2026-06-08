@@ -1,13 +1,49 @@
 import nmap
 import subprocess
 import json
-scanner= nmap.PortScanner()
-target=subprocess.run("ip route | awk '/kernel/ {print $1}' | cut -d' ' -f1", shell=True,capture_output=True,text=True).stdout.strip()
-print(f"scanning the network {target}")
+import mysql.connector
+from datetime import datetime
 
+# -----------------------------
+# Database connection
+# -----------------------------
 
-args="-sS -sV -Pn -O"
- 
+db = mysql.connector.connect(
+    host="192.168.10.3",
+    user="scanner",
+    password="scanner",
+    database="netdb"
+)
+
+cursor = db.cursor()
+
+# -----------------------------
+# Create scan entry
+# -----------------------------
+
+cursor.execute("INSERT INTO scans () VALUES ()")
+scan_id = cursor.lastrowid
+db.commit()
+
+print(f"Created scan #{scan_id}")
+
+# -----------------------------
+# Network detection
+# -----------------------------
+
+scanner = nmap.PortScanner()
+
+target = subprocess.run(
+    "ip route | awk '/kernel/ {print $1}' | cut -d' ' -f1",
+    shell=True,
+    capture_output=True,
+    text=True
+).stdout.strip()
+
+print(f"Scanning network {target}")
+
+args = "-sS -sV -Pn -O"
+
 try:
     scanner.scan(hosts=target, arguments=args)
 except Exception as excpt:
@@ -19,14 +55,19 @@ print(f"Our attempt to scan {target} shows this result")
 numberOfHosts = 0
 results = []
 
+# -----------------------------
+# Host loop
+# -----------------------------
+
 for host in scanner.all_hosts():
 
     numberOfHosts += 1
 
-    hostnames = scanner[host].get('hostnames', [])
+    hostnames = scanner[host].get("hostnames", [])
+
     hostname = (
-        hostnames[0].get('name')
-        if hostnames and 'name' in hostnames[0]
+        hostnames[0].get("name")
+        if hostnames and "name" in hostnames[0]
         else "unknown"
     )
 
@@ -40,7 +81,12 @@ for host in scanner.all_hosts():
     else:
         detected_os = "unknown"
 
-    mac_address = scanner[host].get("addresses", {}).get("mac", "unknown")
+    mac_address = scanner[host].get(
+        "addresses", {}
+    ).get(
+        "mac",
+        "unknown"
+    )
 
     print(f"""
 -------------------- Machine {numberOfHosts} --------------------
@@ -61,6 +107,10 @@ Status   : {scanner[host]['status']['state']}
     }
 
     nb_ports = 0
+
+    # -----------------------------
+    # Ports
+    # -----------------------------
 
     if "tcp" in scanner[host]:
 
@@ -90,13 +140,73 @@ Product : {product}
 Version : {version}
 """)
 
-        print(f"Total open ports: {nb_ports}\n")
-
     host_data["nbPorts"] = nb_ports
+
+    # -----------------------------
+    # Save host to DB
+    # -----------------------------
+
+    cursor.execute(
+        """
+        INSERT INTO hosts
+        (scan_id, ip, hostname, os, nb_ports)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (
+            scan_id,
+            host,
+            hostname,
+            detected_os,
+            nb_ports
+        )
+    )
+
+    host_id = cursor.lastrowid
+
+    # -----------------------------
+    # Save ports to DB
+    # -----------------------------
+
+    for p in host_data["ports"]:
+
+        cursor.execute(
+            """
+            INSERT INTO ports
+            (host_id, port, service, product, version)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                host_id,
+                p["port"],
+                p["service"],
+                p["product"],
+                p["version"]
+            )
+        )
+
+    db.commit()
 
     results.append(host_data)
 
-with open("scan_results.json", "w") as json_file:
+# -----------------------------
+# Save JSON file
+# -----------------------------
+
+current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+filename = f"./scans_backup/scan_results_{current_datetime}.json"
+
+with open(filename, "w") as json_file:
     json.dump(results, json_file, indent=4)
 
-print("Results saved to scan_results.json")  
+print("Results saved to scan_results.json")
+
+print("Results saved to scan_results.json")
+
+# -----------------------------
+# Cleanup
+# -----------------------------
+
+cursor.close()
+db.close()
+
+print(f"Scan #{scan_id} saved successfully.")
